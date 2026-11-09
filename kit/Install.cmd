@@ -62,7 +62,7 @@ goto end
 :notfound
 echo.
 echo That is not the Shatterline folder (it must contain Bin\Shatterline.exe and game01).
-echo Install Shatterline from Steam first (it is free), then run Install.cmd again.
+echo Install Shatterline from Steam first, then run Install.cmd again.
 goto end
 
 :copyfail

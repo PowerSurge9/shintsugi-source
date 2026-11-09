@@ -3,7 +3,7 @@ Shintsugi - Shatterline restored
 
 Brings Shatterline back to life on community servers: the classic lobby and server list, progression saved on your
 PC (materials, perks, carried gear), the full armory, after-match screens, squads with Steam friends and new skins.
-You play with your own free Steam copy of the game.
+You play with your own Steam copy of the game.
 
 The name: Shatterline + kintsugi, the Japanese art of mending broken pottery with gold. Shin-tsugi (shin = new,
 tsugi = joining): the broken game joined together again, mostly as it was, with a little gold added.
@@ -19,7 +19,7 @@ A fan-made project, not affiliated with or endorsed by Frag Lab.
 
 INSTALL (2 minutes)
 -------------------
-1. Install Shatterline from Steam (free). Start it once, then close it.
+1. Install Shatterline from your Steam library. Start it once, then close it.
 2. Unpack this archive anywhere (for example to your Desktop). You get a folder named shintsugi_mod.
 3. In that folder, double-click Install.cmd.
    It finds the game by itself and copies two files into the game folder.
