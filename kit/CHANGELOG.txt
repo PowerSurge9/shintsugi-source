@@ -1,0 +1,52 @@
+Shintsugi - changelog
+=====================
+
+Newest version first. Versions are dates (year.month.day). Players update by running the new Install.cmd; your
+progress in %LOCALAPPDATA%\Shatterline is kept. "Server part" changes only matter to server hosts.
+
+
+2026.11.09
+----------
+Progress safety
+- Fixed: if your progress file could not be read (for example a typo after editing it by hand), the mod replaced it
+  with default values at the next start, and your materials, perks, carried gear and badge were lost. Now the file
+  is left as it is and nothing is saved until it is fixed; offline_profile.log says so.
+- Fixed: if your progress file was locked for a moment at game start (antivirus scan, a sync tool), the mod treated
+  you as a new player and saved the starter wallet over your progress. Now it waits briefly, and if the file still
+  can't be opened it leaves it alone for that session.
+- Fixed: unusual characters in a saved item or badge name could make the progress file unreadable.
+- New: offline_profile.json.bak, a copy of your progress from before each game session's first save. If a session
+  goes wrong, close the game and copy it over offline_profile.json.
+- New: CollectLogs.cmd puts the logs a bug report needs into one zip (shintsugi_logs.zip).
+
+Squads
+- Security: data from other players in a squad is now checked before it reaches the squad screens. A player who
+  joined without an invite and ignored the kick could otherwise show false squad entries or send the squad to a
+  server of their choice. If the lead of your squad ever goes to such a player, you leave the squad.
+- Fixed: after the leader handed the lead on, players invited by the old leader were kicked when they joined, and
+  the old leader kept showing them as invited.
+- Fixed: an invite sent while you were joining another squad was never delivered and showed as sent forever. Only
+  the leader invites, so this now just fails (logged).
+- Fixed: inviting a friend and right away accepting someone else's invite could leave you in two squads at once.
+- Fixed: long Cyrillic or Japanese Steam names could be cut in the middle of a letter.
+
+After-match screens
+- Fixed: after a match whose medals screen didn't come, the next match's medals screen could show an extra copy of
+  your hero.
+
+Expeditions
+- Fixed: a PvP match or a co-op mission between two expeditions cleared the gear you carried out of the last
+  expedition. Carried gear now changes only after an expedition (and, as before, a failed one clears it).
+
+
+2026.11.08
+----------
+First public release.
+- Progression saved on your PC: materials, perk levels bought per agent, carried gear; starter wallet for new players.
+- Classic lobby with server list; Missions screen lights co-op missions being played on listed servers.
+- Armory with all 27 weapons, skins, paints, stickers, trinkets.
+- After-match screens: MVP, medals, session details.
+- Squads with Steam friends.
+- New skins: Brisa Star Ray Outfit and Winter set, Pill Blackgold set, Malva Gilded set, Mongoose Bloodstream Cyber
+  Soldier.
+- Server part (optional download): new skins in matches, badges shown to other players, expedition fixes, kill cam.

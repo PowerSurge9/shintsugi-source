@@ -1,0 +1,12 @@
+# Private items: everyone with the mod SEES them on a player who wears them, but only the owner can CHOOSE them.
+# The owner's builds (offline_profile\build.ps1 without -Public, the dev pak) own them; the public download and the
+# friend zip (-Public builds) ship their files but don't own them. The server pak has them as usual.
+# One key per line, matched case-insensitively:
+#   - offline inventory files (config\backend\inventory_*.json): entries naming a key are removed -> not owned
+#   - the public DLL owns every badge except those whose name contains a key (it still knows them, to show them)
+# make_public_zip.ps1 checks that the inventory files name no key and that the private files are still in the pak.
+
+# CTEHA badge: icon bcn_cteha, background bgr_cteha
+cteha
+# Pill's Square Label Beanie (head gear 94, with the CTEHA label)
+pill_uppart94
