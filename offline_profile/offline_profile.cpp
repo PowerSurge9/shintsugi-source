@@ -34,6 +34,7 @@
 #include <map>
 #include <set>
 #include <vector>
+#include <algorithm>
 
 // ---------------------------------------------------------------------------------------------------------
 // Game build this was reverse-engineered on (Shatterline.exe, Steam). VAs below assume the preferred base.
@@ -653,13 +654,14 @@ static void LinkBadgeItems(void* inventory)
 // should adding an item re-enter one of the hooks. Items are removed only when the caller allows it (never during
 // the item link pass, which walks the item list).
 static bool g_restoring;
+static std::set<std::string> g_packItems;     // the items of the installed skin packs (ScanSkinPacks), not saved
 static void RestoreOwnedItems(void* inventory, const char* when, bool mayRemove)
 {
     if (g_restoring) return;
     g_restoring = true;
     unsigned added = 0;
     std::set<std::string> badges = ChosenBadgeItems();
-    for (const std::set<std::string>* items : { &g_ownedItems, &g_carriedItems, &badges }) {
+    for (const std::set<std::string>* items : { &g_ownedItems, &g_carriedItems, &badges, &g_packItems }) {
         for (const std::string& item : *items) {
             if (g_inventoryHasItem(inventory, item.c_str())) continue;
             g_origInventoryAddItem(inventory, item.c_str(), 1, 0);
@@ -677,8 +679,8 @@ static void RestoreOwnedItems(void* inventory, const char* when, bool mayRemove)
         if (g_badgeItems.insert(item).second) Log("Badge item %s in the inventory (shown to other players)", item.c_str());
     g_restoring = false;
     if (added)
-        Log("Inventory restored %s: %u of %u owned + carried + badge items added", when, added,
-            (unsigned)(g_ownedItems.size() + g_carriedItems.size() + badges.size()));
+        Log("Inventory restored %s: %u of %u owned + carried + badge + skin pack items added", when, added,
+            (unsigned)(g_ownedItems.size() + g_carriedItems.size() + badges.size() + g_packItems.size()));
 }
 
 // Runs on wallet reads (the lobby UI reads it constantly). The game reloads the inventory file after login and
@@ -2560,8 +2562,19 @@ static const wchar_t kModPaks[] = L"shintsugi*.pak";
 static const unsigned char kMeshAssetType[16] = { 0xC2, 0x86, 0x9E, 0x3B, 0xDD, 0xA0, 0x4E, 0x01,
                                                   0x8F, 0xE3, 0x67, 0x70, 0xD7, 0x88, 0x86, 0x6B };
 
-// Names of the .cgf files in one zip (central directory only)
-static void ListPakModels(const std::wstring& pak, std::vector<std::string>& models)
+// <game>\game01\ (the exe is in <game>\Bin), empty if not found
+static std::wstring Game01Dir()
+{
+    wchar_t exe[MAX_PATH];
+    DWORD n = GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return std::wstring();
+    std::wstring dir(exe, n);
+    dir = dir.substr(0, dir.find_last_of(L'\\'));                      // ...\Bin
+    return dir.substr(0, dir.find_last_of(L'\\')) + L"\\game01\\";     // ends with the separator
+}
+
+// Names of all files in one zip (central directory only), with '/' separators
+static void ListPakFiles(const std::wstring& pak, std::vector<std::string>& names)
 {
     FILE* f = _wfopen(pak.c_str(), L"rb");
     if (!f) return;
@@ -2582,7 +2595,8 @@ static void ListPakModels(const std::wstring& pak, std::vector<std::string>& mod
                     memcpy(&nameLen, &cd[p + 28], 2); memcpy(&extraLen, &cd[p + 30], 2); memcpy(&commentLen, &cd[p + 32], 2);
                     if (p + 46 + nameLen > cd.size()) break;
                     std::string name((const char*)&cd[p + 46], nameLen);
-                    if (name.size() > 4 && _stricmp(name.c_str() + name.size() - 4, ".cgf") == 0) models.push_back(name);
+                    for (char& c : name) if (c == '\\') c = '/';
+                    names.push_back(name);
                     p += 46 + nameLen + extraLen + commentLen;
                 }
             }
@@ -2593,23 +2607,26 @@ static void ListPakModels(const std::wstring& pak, std::vector<std::string>& mod
     fclose(f);
 }
 
+static bool EndsWithNoCase(const std::string& s, const char* suffix)
+{
+    size_t n = strlen(suffix);
+    return s.size() > n && _stricmp(s.c_str() + s.size() - n, suffix) == 0;
+}
+
 static void RegisterCustomModels(void* handler)
 {
     static volatile LONG done;
     if (InterlockedExchange(&done, 1)) return;
-    wchar_t exe[MAX_PATH];
-    DWORD n = GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    if (n == 0 || n >= MAX_PATH) return;
-    std::wstring dir(exe, n);
-    dir = dir.substr(0, dir.find_last_of(L'\\'));                      // ...\Bin
-    dir = dir.substr(0, dir.find_last_of(L'\\')) + L"\\game01\\";     // ...\game01
-    std::vector<std::string> models;
+    std::wstring dir = Game01Dir();
+    if (dir.empty()) return;
+    std::vector<std::string> files, models;
     WIN32_FIND_DATAW fd;
     HANDLE h = FindFirstFileW((dir + kModPaks).c_str(), &fd);
     if (h != INVALID_HANDLE_VALUE) {
-        do ListPakModels(dir + fd.cFileName, models); while (FindNextFileW(h, &fd));
+        do ListPakFiles(dir + fd.cFileName, files); while (FindNextFileW(h, &fd));
         FindClose(h);
     }
+    for (const std::string& f : files) if (EndsWithNoCase(f, ".cgf")) models.push_back(f);
     if (models.empty()) Log("No models of ours to register: no .cgf in game01\\%ls", kModPaks);
     static const unsigned char nullId[16] = {};
     for (const std::string& m : models) {
@@ -2626,6 +2643,164 @@ static void RegisterCustomModels(void* handler)
     }
 }
 
+static std::string Lower(std::string s)
+{
+    for (char& c : s) c = (char)tolower((unsigned char)c);
+    return s;
+}
+
+// Every file of our paks (game01\shintsugi*.pak), lower case; listed once (thread-safe static)
+static std::set<std::string> ListOurPakFiles()
+{
+    std::set<std::string> all;
+    std::wstring dir = Game01Dir();
+    if (dir.empty()) return all;
+    std::vector<std::string> files;
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((dir + kModPaks).c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do ListPakFiles(dir + fd.cFileName, files); while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    for (const std::string& f : files) all.insert(Lower(f));
+    return all;
+}
+static const std::set<std::string>& OurPakFiles()
+{
+    static const std::set<std::string> files = ListOurPakFiles();
+    return files;
+}
+
+static bool ReadGameFile(const char* path, std::string& text);   // through CCryPak (defined with the FOpen hook)
+
+// A full outfit of a skin pack this player doesn't have: the server sends its slice path (slices/custom/...), which
+// this game can't load, and the body would be invisible (it can still be hit: the server has the slice). The hero's
+// default outfit (<class>_<hero>_outfit01, an agent's look with nothing chosen) is shown instead. Hero and slice kind
+// come from the slice's name (<class>_<hero>..._tp / _fp / _lobby, as make_outfit_variant.ps1 writes them), the default
+// slice from that outfit's game item. Empty when it can't be worked out.
+static std::string DefaultOutfitSlice(const std::string& path)
+{
+    std::string leaf = path.substr(path.find_last_of('/') + 1);
+    if (!EndsWithNoCase(leaf, ".dynamicslice")) return std::string();
+    leaf.resize(leaf.size() - (sizeof(".dynamicslice") - 1));
+    const char* key = EndsWithNoCase(leaf, "_tp") ? "tp_slice" : EndsWithNoCase(leaf, "_fp") ? "fp_slice"
+                    : EndsWithNoCase(leaf, "_lobby") ? "lobby_tp_slice" : nullptr;
+    if (!key || leaf.size() < 3 || !isalpha((unsigned char)leaf[0]) || leaf[1] != '_') return std::string();
+    size_t end = 2;
+    while (end < leaf.size() && isalpha((unsigned char)leaf[end])) ++end;
+    if (end == 2) return std::string();
+    std::string item = leaf.substr(0, end) + "_outfit01";
+
+    static SRWLOCK lock = SRWLOCK_INIT;
+    static std::map<std::string, std::string> cache;       // item + key -> slice ("" = none)
+    std::string id = item + "/" + key;
+    AcquireSRWLockExclusive(&lock);
+    auto it = cache.find(id);
+    std::string slice = it != cache.end() ? it->second : std::string();
+    bool known = it != cache.end();
+    ReleaseSRWLockExclusive(&lock);
+    if (known) return slice;
+
+    std::string text;
+    std::string file = "assets/game_items/operatives/" + item + ".game_item";
+    if (ReadGameFile(file.c_str(), text)) {
+        std::string quoted = std::string("\"") + key + "\"";
+        size_t k = text.find(quoted);
+        size_t open = k == std::string::npos ? k : text.find('"', text.find(':', k + quoted.size()) + 1);
+        size_t close = open == std::string::npos ? open : text.find('"', open + 1);
+        if (close != std::string::npos) slice = text.substr(open + 1, close - open - 1);
+    }
+    AcquireSRWLockExclusive(&lock);
+    cache[id] = slice;
+    ReleaseSRWLockExclusive(&lock);
+    return slice;
+}
+
+// The value of "<key>": "<value>" in a JSON text, empty when absent
+static std::string JsonStringValue(const std::string& text, const std::string& key)
+{
+    std::string quoted = "\"" + key + "\"";
+    size_t k = text.find(quoted);
+    if (k == std::string::npos) return std::string();
+    size_t colon = text.find(':', k + quoted.size());
+    size_t open = colon == std::string::npos ? colon : text.find('"', colon + 1);
+    size_t close = open == std::string::npos ? open : text.find('"', open + 1);
+    return close == std::string::npos ? std::string() : text.substr(open + 1, close - open - 1);
+}
+
+// Outfit parts of a skin pack this player doesn't have (a pack's hat, mask, face piece): the server sends the part's
+// item name, this game has no .game_item for it and spawns nothing (OutfitPartsManagerComponent::AddOutfitPartInternal:
+// "Unable to add item '<name>' without .game_item config asset"); a missing pack hat left the head bald, without the
+// hair of the default head gear. The hero's default part for that slot is spawned instead: the slot's item in the
+// hero's default outfit (<class>_<hero>_outfit01.item, "slots"). Hero and slot come from the part's name
+// (<hero>_uppart.. head gear, _midpart.. face accessory, _lowpart.. face style, _facepaint.. face paint).
+// (OutfitPartsManagerComponent::AddOutfitPartInternal(this, ?, const char* item, ?); 0x1427A4C60 with the same
+// message is PickupItemComponent::GetVisualSliceByItem, not this)
+static const uintptr_t kAddOutfitPart = 0x14262BCD0, kAddOutfitPartThunk = 0x1402D5B46;
+static const unsigned char kAddOutfitPartProlog[] = { 0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10,
+                                                      0x48, 0x89, 0x7C, 0x24, 0x18, 0x55, 0x41, 0x54, 0x41, 0x57 };
+static const uintptr_t kFindGameItemConfig = 0x1404559DF;   // (item name) -> its .game_item config, null if none
+typedef void (*AddOutfitPartFn)(void* self, void* arg, const char* name, void* arg4);
+typedef void* (*FindGameItemConfigFn)(const char* name);
+static AddOutfitPartFn g_origAddOutfitPart;
+
+static std::string DefaultOutfitPart(const std::string& item)
+{
+    static const char* const kinds[][2] = { { "_uppart", "head_gear" }, { "_midpart", "face_accessory" },
+                                           { "_lowpart", "face_style" }, { "_facepaint", "face_paint" } };
+    size_t end = 0;
+    while (end < item.size() && isalpha((unsigned char)item[end])) ++end;
+    if (end == 0 || end >= item.size() || item[end] != '_') return std::string();
+    std::string hero = item.substr(0, end);
+    const char* slot = nullptr;
+    for (auto& k : kinds) if (item.compare(end, strlen(k[0]), k[0]) == 0) slot = k[1];
+    if (!slot) return std::string();
+
+    static SRWLOCK lock = SRWLOCK_INIT;
+    static std::map<std::string, std::string> outfits;      // hero -> text of its default outfit's .item ("" = none)
+    AcquireSRWLockExclusive(&lock);
+    auto it = outfits.find(hero);
+    bool known = it != outfits.end();
+    std::string text = known ? it->second : std::string();
+    ReleaseSRWLockExclusive(&lock);
+    if (!known) {
+        for (char c = 'a'; c <= 'z' && text.empty(); ++c) {    // the class letter: s_brisa, a_mongoose, m_malva...
+            std::string file = std::string("assets/items/operatives/") + c + "_" + hero + "_outfit01.item";
+            if (!ReadGameFile(file.c_str(), text)) text.clear();
+        }
+        AcquireSRWLockExclusive(&lock);
+        outfits[hero] = text;
+        ReleaseSRWLockExclusive(&lock);
+    }
+    return JsonStringValue(text, slot);
+}
+
+static void HookAddOutfitPart(void* self, void* arg, const char* name, void* arg4)
+{
+    FindGameItemConfigFn find = (FindGameItemConfigFn)Va(kFindGameItemConfig);
+    if (!name || !*name || find(name)) return g_origAddOutfitPart(self, arg, name, arg4);
+    std::string item(name);
+    std::string fallback = DefaultOutfitPart(item);
+    bool usable = !fallback.empty() && fallback != item && find(fallback.c_str());
+    static SRWLOCK logLock = SRWLOCK_INIT;
+    static std::set<std::string> logged;
+    AcquireSRWLockExclusive(&logLock);
+    bool first = logged.size() < 200 && logged.insert(item).second;
+    // the names handed to the game stay valid for the session (std::set nodes don't move)
+    static std::set<std::string> names;
+    const char* passed = name;
+    if (usable) passed = names.insert(fallback).first->c_str();
+    ReleaseSRWLockExclusive(&logLock);
+    if (first) {
+        if (usable)
+            Log("Outfit part %s is not installed here (its skin pack is missing): showing %s, the default part",
+                item.c_str(), fallback.c_str());
+        else
+            Log("Outfit part %s is not installed here: nothing to show instead", item.c_str());
+    }
+    g_origAddOutfitPart(self, arg, passed, arg4);
+}
+
 static void HookGetAssetIdByPath(void* result, void* handler, const char* const* path, const void* type,
                                  const bool* autoRegister)
 {
@@ -2634,11 +2809,30 @@ static void HookGetAssetIdByPath(void* result, void* handler, const char* const*
     if (*autoRegister || !path || !*path || strncmp(*path, kCustomSlicePrefix, sizeof(kCustomSlicePrefix) - 1) != 0)
         return;
     static const unsigned char nullId[16] = {};
-    if (memcmp(result, nullId, sizeof(nullId)) != 0) return;   // already known (registered earlier)
-    const bool yes = true;
-    g_origGetAssetIdByPath(result, handler, path, type, &yes);
-    static volatile LONG logged;
-    if (InterlockedIncrement(&logged) <= 20) Log("Registered our slice %s", *path);
+    if (memcmp(result, nullId, sizeof(nullId)) != 0) return;   // in the catalog (the installers list our slices)
+    static SRWLOCK logLock = SRWLOCK_INIT;
+    static std::set<std::string> logged;                       // one line per slice
+    std::string lower = Lower(*path);
+    std::string line;
+    if (OurPakFiles().count(lower)) {
+        // ours but not in the catalog (it was not updated): registered under its path, as the engine does
+        const bool yes = true;
+        g_origGetAssetIdByPath(result, handler, path, type, &yes);
+        line = "Registered our slice " + lower + " (the asset catalog doesn't list it: run the installer again)";
+    } else {
+        std::string fallback = DefaultOutfitSlice(lower);
+        if (!fallback.empty()) {
+            const char* p = fallback.c_str();
+            const bool no = false;
+            g_origGetAssetIdByPath(result, handler, &p, type, &no);
+        }
+        line = "Slice " + lower + " is not installed here (its skin pack is missing): " +
+               (fallback.empty() ? std::string("nothing to show instead") : "showing " + fallback + ", the default outfit");
+    }
+    AcquireSRWLockExclusive(&logLock);
+    bool first = logged.size() < 200 && logged.insert(lower).second;
+    ReleaseSRWLockExclusive(&logLock);
+    if (first) Log("%s", line.c_str());
 }
 
 // Optional: without it outfits that only exist in our pak show the default outfit
@@ -2714,6 +2908,238 @@ static void InstallInventoryHooks()
         (void*)&HookApplyItemLinks, "equipped bought perks are unequipped after each inventory reload");
 }
 
+// ---------------------------------------------------------------------------------------------------------
+// Skin packs: game01\shintsugi_skins_<pack>.pak, each one set of skins that can be installed or removed on its own.
+//
+// A pack can't bring its own copy of the files every pack adds to: a later pak replaces a file, it doesn't merge it.
+// So a pack uses only its own paths, and the DLL adds the two shared things:
+//  - icons: the UI reads only the icon lists named in libs/ui/images/configs.json. Every .json under
+//    libs/ui/images/shintsugi_skins/ in a pack is such a list; the game's configs.json (whichever pak wins) is read
+//    through the engine, the pack lists are appended, and the result is written to
+//    %LOCALAPPDATA%\Shatterline\generated\configs.json, which CCryPak::FOpen opens instead (it opens disk paths too)
+//  - ownership: every item of a pack (assets/items/**/<name>.item) is put in the inventory like a bought item, but
+//    not saved in the profile (removing the pack removes its items)
+// Names (localization\<lang>\<pack>.json) need nothing: the game reads every file of those folders.
+static const wchar_t kSkinPaks[] = L"shintsugi_skins_*.pak";
+static const char kPackListDir[] = "libs/ui/images/shintsugi_skins/";
+static const size_t kImagesDirLength = sizeof("libs/ui/images/") - 1;   // configs.json names lists relative to it
+static const char kItemsDir[] = "assets/items/";
+static const char kConfigsPath[] = "libs/ui/images/configs.json";
+static std::vector<std::string> g_packIconLists;   // relative to libs/ui/images/, as configs.json names them
+
+static void ScanSkinPacks()
+{
+    std::wstring dir = Game01Dir();
+    if (dir.empty()) return;
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((dir + kSkinPaks).c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    std::vector<std::wstring> paks;
+    do paks.push_back(fd.cFileName); while (FindNextFileW(h, &fd));
+    FindClose(h);
+    std::sort(paks.begin(), paks.end(),
+              [](const std::wstring& a, const std::wstring& b) { return _wcsicmp(a.c_str(), b.c_str()) < 0; });
+    for (const std::wstring& pak : paks) {
+        std::vector<std::string> files;
+        ListPakFiles(dir + pak, files);
+        unsigned lists = 0, items = 0;
+        for (const std::string& f : files) {
+            if (_strnicmp(f.c_str(), kPackListDir, sizeof(kPackListDir) - 1) == 0 && EndsWithNoCase(f, ".json")) {
+                g_packIconLists.push_back(f.substr(kImagesDirLength));
+                ++lists;
+            } else if (_strnicmp(f.c_str(), kItemsDir, sizeof(kItemsDir) - 1) == 0 && EndsWithNoCase(f, ".item")) {
+                size_t slash = f.find_last_of('/');
+                if (g_packItems.insert(f.substr(slash + 1, f.size() - slash - 1 - 5)).second) ++items;
+            }
+        }
+        Log("Skin pack %ls: %u items, %u icon lists%s", pak.c_str(), items, lists,
+            files.empty() ? " (NOT READ: not a zip?)" : "");
+    }
+}
+
+// CCryPak (ICryPak). FOpen is hooked; the others are called to read the game's own configs.json.
+static const uintptr_t kFOpen = 0x149810CB0, kFOpenThunk = 0x1403F24E8;
+static const unsigned char kFOpenProlog[] = { 0x40, 0x55, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x57,
+                                              0x48, 0x8D, 0xAC, 0x24, 0xF0, 0xF7, 0xFF, 0xFF };
+static const uintptr_t kFReadRaw = 0x149811C50;   // the vtable slot after FOpen
+static const uintptr_t kFGetSize = 0x1498106B0;   // FGetSize(handle), FOpen's slot + 9
+static const uintptr_t kFClose = 0x14980FE40;     // FOpen's slot + 18
+// (this, path, mode, flags) -> file handle (0 = not opened)
+typedef uint32_t (*FOpenFn)(void* pak, const char* path, const char* mode, uint32_t flags);
+typedef size_t (*FReadRawFn)(void* pak, void* data, size_t length, size_t count, uint32_t handle);
+typedef size_t (*FGetSizeFn)(void* pak, uint32_t handle);
+typedef int (*FCloseFn)(void* pak, uint32_t handle);
+static FOpenFn g_origFOpen;
+static CRITICAL_SECTION g_configsLock;
+static int g_configsState;                        // 0 not made yet, 1 made (g_generatedConfigs), 2 failed
+static std::string g_generatedConfigs;            // its path for FOpen (system code page)
+
+// A file as the engine sees it (from whichever pak wins, or the disk); false when it doesn't open or read whole
+static bool ReadEngineFile(void* pak, const char* path, const char* mode, uint32_t flags, std::string& text)
+{
+    uint32_t h = g_origFOpen(pak, path, mode, flags);
+    if (!h) return false;
+    size_t size = ((FGetSizeFn)Va(kFGetSize))(pak, h);
+    text.assign(size < (16u << 20) ? size : 0, '\0');
+    size_t read = text.empty() ? 0 : ((FReadRawFn)Va(kFReadRaw))(pak, &text[0], 1, text.size(), h);
+    ((FCloseFn)Va(kFClose))(pak, h);
+    return !text.empty() && read == size;
+}
+
+// Writes %LOCALAPPDATA%\Shatterline\generated\<leaf>; ansi = its path for FOpen (system code page)
+static bool WriteGeneratedFile(const std::wstring& leaf, const std::string& text, std::string& ansiPath)
+{
+    std::wstring folder = g_dir + L"\\generated", file = folder + L"\\" + leaf;
+    CreateDirectoryW(folder.c_str(), nullptr);
+    char ansi[MAX_PATH * 2];
+    wchar_t back[MAX_PATH * 2];
+    BOOL lossy = FALSE;
+    if (!WideCharToMultiByte(CP_ACP, 0, file.c_str(), -1, ansi, sizeof(ansi), nullptr, &lossy) || lossy ||
+        !MultiByteToWideChar(CP_ACP, 0, ansi, -1, back, MAX_PATH * 2) || file != back) {
+        Log("The game can't open files in %ls (characters outside the system code page)", folder.c_str());
+        return false;
+    }
+    FILE* f = _wfopen(file.c_str(), L"wb");
+    bool ok = f && fwrite(text.data(), 1, text.size(), f) == text.size();
+    if (f) ok = fclose(f) == 0 && ok;
+    if (!ok) { Log("%ls not written", file.c_str()); return false; }
+    ansiPath = ansi;
+    return true;
+}
+
+// Inserts entries before the last ']' of a JSON text (the end of its main list); false when there is none
+static bool AppendToLastList(std::string& text, const std::vector<std::string>& entries, const char* indent)
+{
+    size_t close = text.find_last_of(']');
+    if (close == std::string::npos || close == 0) return false;
+    size_t last = text.find_last_not_of(" \t\r\n", close - 1);
+    bool comma = last != std::string::npos && text[last] != '[';
+    std::string added;
+    for (const std::string& e : entries) {
+        added += comma ? ",\r\n" : "\r\n";
+        added += indent + e;
+        comma = true;
+    }
+    text.insert(last == std::string::npos ? close : last + 1, added);
+    return true;
+}
+
+// The game's configs.json with the pack lists added before its last ']' (the end of "configs")
+static bool MakeMergedConfigs(void* pak, const char* mode, uint32_t flags)
+{
+    std::string text;
+    std::vector<std::string> entries;
+    for (const std::string& list : g_packIconLists) entries.push_back("{\"file\": \"" + list + "\"}");
+    if (!ReadEngineFile(pak, kConfigsPath, mode, flags, text) || !AppendToLastList(text, entries, "        ")) {
+        Log("Skin packs: the game's %s is not readable; pack icons are not shown", kConfigsPath);
+        return false;
+    }
+    if (!WriteGeneratedFile(L"configs.json", text, g_generatedConfigs)) {
+        Log("Skin packs: pack icons are not shown");
+        return false;
+    }
+    return true;
+}
+
+// Inventory files (config/backend/inventory*.json, the offline stub's items). After loading one, the stub checks the
+// saved equipment (selected_items.savedata) against the file's items, and when a single equipped item is not in the
+// file it drops ALL saved equipment, of every hero (InventoryComponentStub::LoadInventoryTask 0x1481D9C30: "Reset
+// equipped attachments data due to not valid attachment <item>"). The items this DLL owns for the player (skin pack
+// items, bought items, the chosen badges) are added to the inventory only after that check, so wearing a pack outfit
+// reset every hero's look on the next inventory load (after each match). So the file is served with those items in
+// it (generated\<file name>), and the check finds them; RestoreOwnedItems then has nothing left to add.
+static const char kBackendDir[] = "config/backend/";
+
+static bool IsInventoryFile(const char* path, std::string& leaf)
+{
+    std::string p(path);
+    for (char& c : p) c = c == '\\' ? '/' : (char)tolower((unsigned char)c);
+    size_t dir = p.rfind(kBackendDir);
+    if (dir == std::string::npos) return false;
+    leaf = p.substr(dir + sizeof(kBackendDir) - 1);
+    return leaf.compare(0, 9, "inventory") == 0 && leaf.find('/') == std::string::npos && EndsWithNoCase(leaf, ".json");
+}
+
+// 0 = open the game's own file
+static uint32_t OpenInventoryWithOurItems(void* pak, const char* path, const char* mode, uint32_t flags,
+                                          const std::string& leaf)
+{
+    std::set<std::string> items;
+    EnterCriticalSection(&g_lock);
+    items = g_ownedItems;
+    for (const std::string& item : ChosenBadgeItems()) items.insert(item);
+    items.insert(g_packItems.begin(), g_packItems.end());
+    LeaveCriticalSection(&g_lock);
+    if (items.empty()) return 0;
+
+    std::string text;
+    if (!ReadEngineFile(pak, path, mode, flags, text)) {
+        Log("Inventory file %s not readable; equipped skin pack items may be reset after a match", path);
+        return 0;
+    }
+    std::vector<std::string> entries;
+    for (const std::string& item : items)
+        if (text.find("\"" + item + "\"") == std::string::npos)
+            entries.push_back("{\"capacity\": 0, \"item_name\": \"" + item + "\", \"slots\": []}");
+    if (entries.empty()) return 0;
+    std::string generated;
+    std::wstring wleaf(leaf.begin(), leaf.end());
+    if (!AppendToLastList(text, entries, "        ") || !WriteGeneratedFile(wleaf, text, generated)) {
+        Log("Inventory file %s not extended; equipped skin pack items may be reset after a match", path);
+        return 0;
+    }
+    uint32_t handle = g_origFOpen(pak, generated.c_str(), mode, flags);
+    Log("Inventory file %s served with %zu owned, badge and skin pack items%s", path, entries.size(),
+        handle ? "" : ": NOT OPENED, the game's own is used");
+    return handle;
+}
+
+static void* volatile g_cryPak;   // the engine's CCryPak, seen in the first FOpen
+
+static bool ReadGameFile(const char* path, std::string& text)
+{
+    void* pak = g_cryPak;
+    return pak && g_origFOpen && ReadEngineFile(pak, path, "rb", 0, text);
+}
+
+static uint32_t HookFOpen(void* pak, const char* path, const char* mode, uint32_t flags)
+{
+    if (!g_cryPak) g_cryPak = pak;
+    if (!path) return g_origFOpen(pak, path, mode, flags);
+    uint32_t handle = 0;
+    std::string leaf;
+    if (_stricmp(path, kConfigsPath) == 0 && !g_packIconLists.empty()) {
+        EnterCriticalSection(&g_configsLock);
+        if (g_configsState == 0) g_configsState = MakeMergedConfigs(pak, mode, flags) ? 1 : 2;
+        if (g_configsState == 1) {
+            handle = g_origFOpen(pak, g_generatedConfigs.c_str(), mode, flags);
+            static int logged;
+            if (logged++ < 3)
+                Log("Skin packs: %s -> %s (%zu pack icon lists)%s", path, g_generatedConfigs.c_str(),
+                    g_packIconLists.size(), handle ? "" : ": NOT OPENED, the game's own is used");
+        }
+        LeaveCriticalSection(&g_configsLock);
+    } else if (g_profileLoaded && IsInventoryFile(path, leaf)) {
+        EnterCriticalSection(&g_configsLock);
+        handle = OpenInventoryWithOurItems(pak, path, mode, flags, leaf);
+        LeaveCriticalSection(&g_configsLock);
+    }
+    return handle ? handle : g_origFOpen(pak, path, mode, flags);
+}
+
+// Without it the packs' icons are blank and equipped pack items are reset after each match (the skins still work)
+static void InstallSkinPacks()
+{
+    ScanSkinPacks();
+    InitializeCriticalSection(&g_configsLock);
+    g_origFOpen = (FOpenFn)RedirectThunk(kFOpenThunk, kFOpen, kFOpenProlog, sizeof(kFOpenProlog),
+                                         (void*)&HookFOpen, "skin pack icons are not shown, equipped pack items "
+                                         "are reset after a match");
+    g_origAddOutfitPart = (AddOutfitPartFn)RedirectThunk(kAddOutfitPartThunk, kAddOutfitPart, kAddOutfitPartProlog,
+                                                         sizeof(kAddOutfitPartProlog), (void*)&HookAddOutfitPart,
+                                                         "missing skin pack parts show nothing instead of the default");
+}
+
 static void Install()
 {
     g_base = (uintptr_t)GetModuleHandleW(nullptr);
@@ -2756,6 +3182,7 @@ static void Install()
     InstallOutfitPartPatch();
     InstallCustomSliceLookup();
     InstallOnlineBackendSwitch();
+    InstallSkinPacks();
     Log("Hooks installed (game base %p)", (void*)g_base);
 }
 

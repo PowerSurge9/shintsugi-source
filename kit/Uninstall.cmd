@@ -1,6 +1,7 @@
 @echo off
-rem Shintsugi (Shatterline mod) - uninstaller. Double-click it: it removes the mod's two files from the game folder
-rem (Bin\version.dll and game01\shintsugi.pak, plus the paks of earlier versions). Your saved progress is kept.
+rem Shintsugi (Shatterline mod) - uninstaller. Double-click it: it removes the mod's files from the game folder
+rem (Bin\version.dll, game01\shintsugi.pak, every skin pack game01\shintsugi_skins_*.pak, plus the paks of earlier
+rem versions). Your saved progress is kept.
 rem The game folder can also be given: drop the Shatterline folder onto this file.
 setlocal
 title Shintsugi (Shatterline mod) - uninstall
@@ -31,6 +32,10 @@ echo.
 for %%F in (shintsugi.pak s9_client_mods.pak s9_client_mods.pak.bak s9_client_mods.pak.old zz_custom.pak zz_custom.pak.old) do (
   if exist "%GAME%\game01\%%F" del /f /q "%GAME%\game01\%%F" && echo Removed game01\%%F
 )
+rem Skin packs work only with the mod: all of them go, other skin makers' packs too
+for %%P in ("%GAME%\game01\shintsugi_skins_*.pak") do (
+  del /f /q "%%~fP" && echo Removed skin pack game01\%%~nxP
+)
 rem Only this mod's version.dll is removed; another mod's one is put back
 if exist "%GAME%\Bin\version.dll" (
   findstr /m /c:"Shatterline Offline Profile" "%GAME%\Bin\version.dll" >nul && del /f /q "%GAME%\Bin\version.dll" && echo Removed Bin\version.dll
@@ -38,6 +43,8 @@ if exist "%GAME%\Bin\version.dll" (
 if exist "%GAME%\Bin\version.dll.other" if not exist "%GAME%\Bin\version.dll" (
   move /y "%GAME%\Bin\version.dll.other" "%GAME%\Bin\version.dll" >nul && echo Put back the other mod's Bin\version.dll
 )
+rem With no Shintsugi pak left, the game's own asset catalog (assetcatalog.pak.orig) is put back
+call :catalog || goto catalogfail
 echo.
 echo Done. The game is back to normal.
 echo Your progress is kept in "%LOCALAPPDATA%\Shatterline" (delete that folder to start over).
@@ -46,11 +53,25 @@ goto end
 :notfound
 echo.
 echo That is not the Shatterline folder (it must contain Bin\Shatterline.exe).
+goto end
+
+:catalogfail
+echo.
+echo The mod is removed, but the game's asset catalog could not be put back (the message above says why).
+echo To get it back: in Steam, verify the integrity of the game files.
 
 :end
 echo.
 pause
 exit /b 0
+
+rem Lists the models of the Shintsugi paks still installed in the game's asset catalog; with none left, the
+rem game's own catalog is put back (see catalog\UpdateCatalog.ps1)
+:catalog
+echo.
+echo Updating the game's asset catalog (the index the game finds models in), this can take a minute...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0catalog\UpdateCatalog.ps1" -Game01 "%GAME%\game01"
+exit /b %errorlevel%
 
 :find
 set "STEAM="

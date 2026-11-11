@@ -1,6 +1,7 @@
 @echo off
 rem Shintsugi (Shatterline mod) - installer. Double-click it: it finds Shatterline in the Steam libraries and copies
-rem two files into the game folder, Bin\version.dll and game01\shintsugi.pak. Nothing else changes.
+rem the mod into the game folder: Bin\version.dll and game01\shintsugi.pak. Nothing else changes: skin packs
+rem (game01\shintsugi_skins_*.pak, separate downloads) already in game01 stay as they are.
 rem The game folder can also be given: drop the Shatterline folder onto this file, or
 rem   Install.cmd "X:\...\steamapps\common\Shatterline"
 setlocal
@@ -39,7 +40,7 @@ for %%F in (s9_client_mods.pak zz_custom.pak) do (
   )
 )
 rem The files were unpacked straight into the game folder: they are in place already
-if /i "%~dp0"=="%GAME%\" goto done
+if /i "%~dp0"=="%GAME%\" goto placed
 
 rem A version.dll from another mod is kept under another name (only one can be loaded)
 if exist "%GAME%\Bin\version.dll" (
@@ -52,11 +53,14 @@ copy /y "%~dp0Bin\version.dll" "%GAME%\Bin\version.dll" >nul || goto copyfail
 copy /y "%~dp0game01\shintsugi.pak" "%GAME%\game01\shintsugi.pak" >nul || goto copyfail
 echo Installed Bin\version.dll
 echo Installed game01\shintsugi.pak
+:placed
+call :catalog || goto catalogfail
 
 :done
 echo.
 echo Done. Start Shatterline from Steam as usual and open Play to pick a server.
 echo No launch options are needed.
+echo The new skins come as skin packs, separate downloads on the same page: see README.txt.
 goto end
 
 :notfound
@@ -70,11 +74,26 @@ echo.
 echo Could not copy the files into "%GAME%".
 echo Right-click Install.cmd and choose "Run as administrator", or copy the Bin and game01
 echo folders from this archive into the game folder by hand (see README.txt).
+goto end
+
+:catalogfail
+echo.
+echo The mod is installed, but the game's asset catalog could not be updated (the message above says why).
+echo The mod still finds its models by itself, so the game should work. Please report the message on the
+echo mod page.
 
 :end
 echo.
 pause
 exit /b 0
+
+rem Lists the models of the installed Shintsugi paks in the game's asset catalog (game01\assetcatalog.pak; the
+rem game's own one is kept as assetcatalog.pak.orig), see catalog\UpdateCatalog.ps1
+:catalog
+echo.
+echo Updating the game's asset catalog (the index the game finds models in), this can take a minute...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0catalog\UpdateCatalog.ps1" -Game01 "%GAME%\game01"
+exit /b %errorlevel%
 
 rem Looks for "<library>\steamapps\common\Shatterline" in the Steam folder and in every library of its
 rem libraryfolders.vdf (paths there have doubled backslashes)
